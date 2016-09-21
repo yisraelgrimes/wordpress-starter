@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Runtime
+# --------
+export TERM=${TERM:-xterm}
+VERBOSE=${VERBOSE:-false}
+
+# Environment
+# ------------
 ADMIN_EMAIL=${ADMIN_EMAIL:-"admin@${DB_NAME}.com"}
 DB_NAME=${DB_NAME:-'wordpress'}
 DB_PASS=${DB_PASS:-'root'}
@@ -13,15 +20,206 @@ WP_DEBUG=${WP_DEBUG:-'false'}
   AFTER_URL=$(echo "$SEARCH_REPLACE" | cut -d ',' -f 2) || \
   SEARCH_REPLACE=false
 
-ERROR () {
-  echo -e "\n=> $(tput -T xterm setaf 1)$(tput -T xterm bold)ERROR$(tput -T xterm sgr 0) (Line $1): $2.";
-  exit 1;
+
+main() {
+
+  generate_config_for wp-cli
+
+  # Download WordPress
+  # ------------------
+  if [ ! -f /app/wp-settings.php ]; then
+    h3 "Downloading wordpress"
+    chown -R www-data:www-data /app /var/www/html
+    WP core download |& loglevel
+    STATUS ${PIPESTATUS[0]}
+  fi
+
+  # Wait for MySQL
+  # --------------
+  h2 "Waiting for MySQL to initialize..."
+  while ! mysqladmin ping --host=db --password=$DB_PASS --silent; do
+    sleep 1
+  done
+
+  h1 "Begin WordPress Configuration"
+
+  h3 "Generating wp.config.php file"
+  generate_config_for wordpress
+  STATUS $?
+
+  h2 "Checking database"
+  check_database
+
+  # .htaccess
+  # ---------
+  if [ ! -f /app/.htaccess ]; then
+    h3 "Generating .htaccess file"
+    if [[ "$MULTISITE" == 'true' ]]; then
+      STATUS 1
+      h3warn "Cannot generate .htaccess for multisite!"
+    else
+      WP rewrite flush --hard |& loglevel
+      STATUS ${PIPESTATUS[0]}
+    fi
+  else
+    h3 ".htaccess exists... SKIPPING"
+    STATUS SKIP
+  fi
+
+  h3 "Adjusting filesystem permissions"
+  groupadd -f docker && usermod -aG docker www-data
+  find /app -type d -exec chmod 755 {} \;
+  find /app -type f -exec chmod 644 {} \;
+  mkdir -p /app/wp-content/uploads
+  chmod -R 775 /app/wp-content/uploads && \
+    chown -R :docker /app/wp-content/uploads
+  STATUS $?
+
+  h2 "Checking plugins"
+  check_plugins
+
+  # Make multisite
+  # ---------------
+  h2 "Checking for WordPress Multisite..."
+  if [ "$MULTISITE" == "true" ]; then
+    h3 "Multisite found. Enabling..."
+    WP core multisite-convert |& loglevel
+    STATUS ${PIPESTATUS[0]}
+  else
+    h3 "Multisite not found. Skipping..."
+    STATUS SKIP
+  fi
+
+  # Operations to perform on first build
+  # ------------------------------------
+  if [ -d /app/wp-content/plugins/akismet ]; then
+    first_build
+  fi
+
+  h1 "WordPress Configuration Complete!"
+
+  rm -f /var/run/apache2/apache2.pid
+  source /etc/apache2/envvars
+  exec apache2 -D FOREGROUND
+
 }
 
-# Configure wp-cli
-# ----------------
+
+# General functions
+# -----------------------
+check_database() {
+  WP core is-installed |& loglevel
+  if [ ${PIPESTATUS[0]} == '1' ]; then
+    h3 "Creating database $DB_NAME"
+    WP db create |& loglevel
+    STATUS ${PIPESTATUS[0]}
+
+    # If an SQL file exists in /data => load it
+    if [ "$(stat -t /data/*.sql >/dev/null 2>&1)" ]; then
+      DATA_PATH=$(find /data/*.sql | head -n 1)
+      h3 "Loading data backup from $DATA_PATH"
+
+      WP db import "$DATA_PATH" |& loglevel
+      STATUS ${PIPESTATUS[0]}
+
+      # If SEARCH_REPLACE is set => Replace URLs
+      if [ "$SEARCH_REPLACE" != false ]; then
+        h3 "Replacing URLs"
+        REPLACEMENTS=$(WP search-replace "$BEFORE_URL" "$AFTER_URL" \
+          --skip-columns=guid | grep replacement) || \
+          ERROR $((LINENO-2)) "Could not execute SEARCH_REPLACE on database"
+        echo -ne "$REPLACEMENTS\n"
+      fi
+    else
+      h3 "No database backup found. Initializing new database"
+      WP core install |& loglevel
+      STATUS ${PIPESTATUS[0]}
+    fi
+  else
+    h3 "Database exists... SKIPPING"
+    STATUS SKIP
+  fi
+}
+
+check_plugins() {
+  if [ "$PLUGINS" ]; then
+    while IFS=',' read -ra plugin; do
+      for i in "${!plugin[@]}"; do
+        plugin_name=$(echo "${plugin[$i]}" | xargs)
+        plugin_url=
+
+        # If plugin matches a URL
+        if [[ $plugin_name =~ ^https?://[www]?.+ ]]; then
+          h3warn "$plugin_name"
+          h3warn "Can't check if plugin is already installed using above format!"
+          h3warn "Switch your compose file to '[plugin-slug]http://pluginurl.com/pluginfile.zip' for better checks"
+          h3 "($((i+1))/${#plugin[@]}) '$plugin_name' not found. Installing"
+          WP plugin install --activate "$plugin_name" --quiet
+          STATUS $?
+          continue
+        fi
+
+        # If plugin matches a URL in new URL format
+        if [[ $plugin_name =~ ^\[.+\]https?://[www]?.+ ]]; then
+          plugin_url=${plugin_name##\[*\]}
+          plugin_name="$(echo $plugin_name | grep -oP '\[\K(.+)(?=\])')"
+        fi
+
+        plugin_url=${plugin_url:-$plugin_name}
+
+        WP plugin is-installed "$plugin_name"
+        if [ $? -eq 0 ]; then
+          h3 "($((i+1))/${#plugin[@]}) '$plugin_name' found. SKIPPING..."
+          STATUS SKIP
+        else
+          h3 "($((i+1))/${#plugin[@]}) '$plugin_name' not found. Installing"
+          WP plugin install --activate "$plugin_url" --quiet
+          STATUS $?
+          if [ $plugin_name == 'rest-api' ]; then
+            h3 "       Installing 'wp-rest-cli' WP-CLI package"
+            WP package install danielbachhuber/wp-rest-cli --quiet
+            STATUS $?
+          fi
+        fi
+      done
+    done <<< "$PLUGINS"
+  else
+    h3 "No plugin dependencies listed. SKIPPING..."
+    STATUS SKIP
+  fi
+}
+
+first_build() {
+  h2 "Cleaning up unneeded files from initial build"
+  h3 "Removing default plugins"
+  WP plugin uninstall akismet hello --deactivate --quiet
+  STATUS $?
+
+  h3 "Removing unneeded themes"
+  REMOVE_LIST=(twentyfourteen twentyfifteen twentysixteen)
+  THEME_LIST=()
+  while IFS=',' read -ra theme; do
+    for i in "${!theme[@]}"; do
+      REMOVE_LIST=( "${REMOVE_LIST[@]/${theme[$i]}}" )
+      THEME_LIST+=("${theme[$i]}")
+    done
+    WP theme delete "${REMOVE_LIST[@]}" --quiet
+  done <<< $THEMES
+  STATUS $?
+
+  h3 "Installing needed themes"
+  WP theme install --quiet "${THEME_LIST[@]}"
+  STATUS $?
+}
+
+# Config Utility Functions
+# -------------------------
+generate_config_for() {
+
+case "$1" in
+
+wp-cli)
 cat > /app/wp-cli.yml <<EOF
-quiet: true
 apache_modules:
   - mod_rewrite
 
@@ -44,171 +242,80 @@ core install:
   admin_email: $ADMIN_EMAIL
   skip-email: true
 EOF
+;;
 
+wordpress)
+  rm -f /app/wp-config.php
+  WP core config |& loglevel
+  return ${PIPESTATUS[0]}
+;;
 
-# Download WordPress
-# ------------------
-if [ ! -f /app/wp-settings.php ]; then
-  printf "=> Downloading wordpress... "
-  chown -R www-data:www-data /app /var/www/html
-  sudo -u www-data wp core download >/dev/null 2>&1 || \
-    ERROR $LINENO "Failed to download wordpress"
-  printf "Done!\n"
-fi
+esac
 
+}
 
-# Wait for MySQL
+# Helpers
 # --------------
-printf "=> Waiting for MySQL to initialize... \n"
-while ! mysqladmin ping --host=db --password=$DB_PASS --silent; do
-  sleep 1
-done
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+ORANGE='\033[0;33m'
+PURPLE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\E[1m'
+NC='\033[0m'
 
-printf "\t%s\n" \
-  "=======================================" \
-  "    Begin WordPress Configuration" \
-  "======================================="
+h1() {
+  local len=$(($(tput cols)-1))
+  local input=$*
+  local size=$((($len - ${#input})/2))
 
+  for ((i = 0; i < $len; i++)); do echo -ne "${PURPLE}${BOLD}="; done; echo ""
+  for ((i = 0; i < $size; i++)); do echo -n " "; done; echo -e "${NC}${BOLD}$input"
+  for ((i = 0; i < $len; i++)); do echo -ne "${PURPLE}${BOLD}="; done; echo -e "${NC}"
+}
 
-# wp-config.php
-# -------------
-printf "=> Generating wp.config.php file... "
-rm -f /app/wp-config.php
-sudo -u www-data wp core config >/dev/null 2>&1 || \
-  ERROR $LINENO "Could not generate wp-config.php file"
-printf "Done!\n"
+h2() {
+  echo -e "${ORANGE}${BOLD}==>${NC}${BOLD} $*${NC}"
+}
 
-# Setup database
-# --------------
-printf "=> Create database '%s'... " "$DB_NAME"
-if [ ! "$(wp core is-installed --allow-root >/dev/null 2>&1 && echo $?)" ]; then
-  sudo -u www-data wp db create >/dev/null 2>&1 || \
-    ERROR $LINENO "Database creation failed"
-  printf "Done!\n"
+h3() {
+  printf "%b " "${CYAN}${BOLD}  ->${NC} $*"
+}
 
-  # If an SQL file exists in /data => load it
-  if [ "$(stat -t /data/*.sql >/dev/null 2>&1 && echo $?)" ]; then
-    DATA_PATH=$(find /data/*.sql | head -n 1)
-    printf "=> Loading data backup from %s... " "$DATA_PATH"
-    sudo -u www-data wp db import "$DATA_PATH" >/dev/null 2>&1 || \
-      ERROR $LINENO "Could not import database"
-    printf "Done!\n"
+h3warn() {
+  printf "%b " "${RED}${BOLD}  [!]|${NC} $*" && echo ""
+}
 
-    # If SEARCH_REPLACE is set => Replace URLs
-    if [ "$SEARCH_REPLACE" != false ]; then
-      printf "=> Replacing URLs... "
-      REPLACEMENTS=$(sudo -u www-data wp search-replace "$BEFORE_URL" "$AFTER_URL" \
-        --no-quiet --skip-columns=guid | grep replacement) || \
-        ERROR $((LINENO-2)) "Could not execute SEARCH_REPLACE on database"
-      echo -ne "$REPLACEMENTS\n"
-    fi
-  else
-    printf "=> No database backup found. Initializing new database... "
-    sudo -u www-data wp core install >/dev/null 2>&1 || \
-      ERROR $LINENO "WordPress Install Failed"
-    printf "Done!\n"
+STATUS() {
+  local status=$1
+  if [[ $1 == 'SKIP' ]]; then
+    echo ""
+    return
   fi
-else
-  printf "Already exists!\n"
-fi
-
-
-# .htaccess
-# ---------
-if [ ! -f /app/.htaccess ]; then
-  printf "=> Generating .htaccess file... "
-  if [[ "$MULTISITE" == 'true' ]]; then
-    printf "Cannot generate .htaccess for multisite!"
-  else
-    sudo -u www-data wp rewrite flush --hard >/dev/null 2>&1 || \
-      ERROR $LINENO "Could not generate .htaccess file"
-    printf "Done!\n"
+  if [[ $status != 0 ]]; then
+    echo -e "${RED}✘${NC}"
+    return
   fi
-else
-  printf "=> .htaccess exists. SKIPPING...\n"
-fi
+  echo -e "${GREEN}✓${NC}"
+}
+
+ERROR() {
+  echo -e "${RED}=> ERROR (Line $1): $2.${NC}";
+  exit 1;
+}
+
+WP() {
+  sudo -u www-data wp "$@"
+}
+
+loglevel() {
+  [[ "$VERBOSE" == "false" ]] && return
+  local IN
+  while read IN; do
+    echo $IN
+  done
+}
 
 
-# Filesystem Permissions
-# ----------------------
-printf "=> Adjusting filesystem permissions... "
-groupadd -f docker && usermod -aG docker www-data
-find /app -type d -exec chmod 755 {} \;
-find /app -type f -exec chmod 644 {} \;
-mkdir -p /app/wp-content/uploads
-chmod -R 775 /app/wp-content/uploads && \
-  chown -R :docker /app/wp-content/uploads
-printf "Done!\n"
-
-
-# Install Plugins
-# ---------------
-if [ "$PLUGINS" ]; then
-  printf "=> Checking plugins...\n"
-  while IFS=',' read -ra plugin; do
-    for i in "${!plugin[@]}"; do
-      plugin_name=$(echo "${plugin[$i]}" | xargs)
-      sudo -u www-data wp plugin is-installed "${plugin_name}"
-      if [ $? -eq 0 ]; then
-        printf "=> ($((i+1))/${#plugin[@]}) Plugin '%s' found. SKIPPING...\n" "${plugin_name}"
-      else
-        printf "=> ($((i+1))/${#plugin[@]}) Plugin '%s' not found. Installing...\n" "${plugin_name}"
-        sudo -u www-data wp plugin install "${plugin_name}"
-      fi
-    done
-  done <<< "$PLUGINS"
-else
-  printf "=> No plugin dependencies listed. SKIPPING...\n"
-fi
-
-
-# Make multisite
-# ---------------
-printf "=> Turn wordpress multisite on... "
-if [ "$MULTISITE" == "true" ]; then
-  sudo -u www-data wp core multisite-convert --allow-root >/dev/null 2>&1 || \
-    ERROR $LINENO "Failed to turn on wordpress multisite"
-  printf "Done!\n"
-else
-  printf "Skip!\n"
-fi
-
-
-# Operations to perform on first build
-# ------------------------------------
-if [ -d /app/wp-content/plugins/akismet ]; then
-  printf "=> Removing default plugins... "
-  sudo -u www-data wp plugin uninstall akismet hello --deactivate
-  printf "Done!\n"
-
-  printf "=> Removing unneeded themes... "
-  REMOVE_LIST=(twentyfourteen twentyfifteen twentysixteen)
-  THEME_LIST=()
-  while IFS=',' read -ra theme; do
-    for i in "${!theme[@]}"; do
-      REMOVE_LIST=( "${REMOVE_LIST[@]/${theme[$i]}}" )
-      THEME_LIST+=("${theme[$i]}")
-    done
-    sudo -u www-data wp theme delete "${REMOVE_LIST[@]}"
-  done <<< $THEMES
-  printf "Done!\n"
-
-  printf "=> Installing needed themes... "
-  sudo -u www-data wp theme install "${THEME_LIST[@]}"
-  printf "Done!\n"
-fi
-
-
-printf "\t%s\n" \
-  "=======================================" \
-  "   WordPress Configuration Complete!" \
-  "======================================="
-
-
-# Start apache
-# ------------
-
-rm -f /var/run/apache2/apache2.pid
-source /etc/apache2/envvars
-exec apache2 -D FOREGROUND
+main

@@ -66,11 +66,12 @@ services:
       DB_PASS: root # must match below
       PLUGINS: >-
         academic-bloggers-toolkit,
-        co-authors-plus
+        co-authors-plus,
+        [WP-API-master]https://github.com/WP-API/WP-API/archive/master.zip,
       SEARCH_REPLACE: yoursite.com,localhost:8080
       WP_DEBUG: 'true'
   db:
-    image: mysql:5.7
+    image: mysql:5.7 # or mariadb:10
     ports:
       - 3306:3306
     volumes:
@@ -98,11 +99,14 @@ volumes:
 - `WP_DEBUG_DISPLAY` (optional): Defaults to `false`
 - `WP_DEBUG_LOG` (optional): Defaults to `false`
 - `THEMES` (optional): Comma-separated list of themes you want to install.
-- `PLUGINS` (optional): Comma-separated list of plugins you want to install.
+- `PLUGINS` (optional): Comma-separated list of plugins you want to install in either of the following forms:
+  - `plugin-slug`: Used when installing plugin direct from WordPress.org.
+  - `[plugin-slug]http://pluginsite.com/plugin.zip`: Used when installing plugin from URL.
 - `MULTISITE` (optional): Set to `'true'` to enable multisite
 - `SEARCH_REPLACE` (optional): Comma-separated string in the form of `current-url,replacement-url`.
     - When defined, `current-url` will be replaced with `replacement-url` on build (useful for development environments utilizing a database copied from a live site).
     - **IMPORTANT NOTE:** If you are running Docker on Mac or PC (using Docker Machine), your replacement url MUST be the output of the following command: `echo $(docker-machine ip <your-machine-name>):8080`
+- `VERBOSE` (optional): Set to `true` to run build with verbose logging.
 
 ##### DB Container Environment variables
 
