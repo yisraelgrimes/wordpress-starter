@@ -293,10 +293,10 @@ check_plugins() {
       h3 "($i/$plugin_count) '$plugin_name' not found. Installing"
       WP plugin install --activate --quiet "$plugin_url"
       STATUS $?
-      # Pretty much guarenteed to need/want 'wp-rest-cli' if you are using 'rest-api'
+      # Pretty much guarenteed to need/want 'restful' if you are using 'rest-api'
       if [ "$plugin_name" == 'rest-api' ]; then
-        h3 "       Installing 'wp-rest-cli' WP-CLI package"
-        WP package install danielbachhuber/wp-rest-cli --quiet
+        h3 "       Installing 'restful' WP-CLI package"
+        WP package install danielbachhuber/resftul --quiet
         STATUS $?
       fi
     fi
