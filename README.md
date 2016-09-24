@@ -98,7 +98,9 @@ volumes:
 - `WP_DEBUG` (optional): Defaults to `false`
 - `WP_DEBUG_DISPLAY` (optional): Defaults to `false`
 - `WP_DEBUG_LOG` (optional): Defaults to `false`
-- `THEMES` (optional): Comma-separated list of themes you want to install.
+- `THEMES` (optional): Comma-separated list of themes you want to install in either of the following forms:
+  - `theme-slug`: Used when installing theme direct from WordPress.org.
+  - `[theme-slug]http://pluginsite.com/plugin.zip`: Used when installing theme from URL.
 - `PLUGINS` (optional): Comma-separated list of plugins you want to install in either of the following forms:
   - `plugin-slug`: Used when installing plugin direct from WordPress.org.
   - `[plugin-slug]http://pluginsite.com/plugin.zip`: Used when installing plugin from URL.
