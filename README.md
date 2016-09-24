@@ -114,24 +114,6 @@ volumes:
 
 - `MYSQL_ROOT_PASSWORD` (required): Must match `DB_PASS` of the wordpress container
 
-### Working with databases
-
-If you have an exported `.sql` file from an existing website, drop the file into the `data/` folder. The first time you run the container, it will detect the SQL dump and use it as a database. If it doesn't find one, it will create a fresh database.
-
-If the SQL dump changes for some reason, you can reload the database by running:
-
-```
-docker-compose run wordpress wp db import "$(find /data/*.sql | head -n 1)" --allow-root
-```
-
-If you want to create a dump of your development database, you can run:
-
-```
-docker-compose run wordpress wp db export /data --allow-root
-```
-
-Finally, sometimes your development environment runs on a different domain than your live one. The live will be `example.com` and the development `localhost:8080`. This project does a search and replace for you. You can set the `SEARCH_REPLACE: example.com,localhost:8080` environment variable in the `docker-compose.yml`.
-
 ### Use `wp-cli`
 
 You can access wp-cli by running `npm run wp ...`. Here are some examples:
@@ -140,6 +122,24 @@ You can access wp-cli by running `npm run wp ...`. Here are some examples:
 npm run wp plugin install <some-plugin>
 npm run wp db import /data/database.sql
 ```
+
+### Working with databases
+
+If you have an exported `.sql` file from an existing website, drop the file into the `data/` folder. The first time you run the container, it will detect the SQL dump and use it as a database. If it doesn't find one, it will create a fresh database.
+
+If the SQL dump changes for some reason, you can reload the database by running:
+
+```sh
+docker exec wordpress /bin/bash "wp db import $(find /data/*.sql | head -n 1) --allow-root"
+```
+
+If you want to create a dump of your development database, you can run:
+
+```sh
+npm run wp db export /data --allow-root
+```
+
+Finally, sometimes your development environment runs on a different domain than your live one. The live will be `example.com` and the development `localhost:8080`. This project does a search and replace for you. You can set the `SEARCH_REPLACE: example.com,localhost:8080` environment variable in the `docker-compose.yml`.
 
 ---
 
