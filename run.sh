@@ -7,10 +7,11 @@ VERBOSE=${VERBOSE:-false}
 
 # Environment
 # ------------
-ADMIN_EMAIL=${ADMIN_EMAIL:-"admin@${DB_NAME}.com"}
+DB_HOST=${DB_HOST:-'db'}
 DB_NAME=${DB_NAME:-'wordpress'}
 DB_PASS=${DB_PASS:-'root'}
 DB_PREFIX=${DB_PREFIX:-'wp_'}
+ADMIN_EMAIL=${ADMIN_EMAIL:-"admin@${DB_NAME}.com"}
 WP_DEBUG_DISPLAY=${WP_DEBUG_DISPLAY:-'true'}
 WP_DEBUG_LOG=${WB_DEBUG_LOG:-'false'}
 WP_DEBUG=${WP_DEBUG:-'false'}
@@ -30,7 +31,7 @@ core config:
   dbpass: $DB_PASS
   dbname: $DB_NAME
   dbprefix: $DB_PREFIX
-  dbhost: db:3306
+  dbhost: $DB_HOST:3306
   extra-php: |
     define('WP_DEBUG', ${WP_DEBUG,,});
     define('WP_DEBUG_LOG', ${WP_DEBUG_LOG,,});
@@ -59,7 +60,7 @@ main() {
   # Wait for MySQL
   # --------------
   h2 "Waiting for MySQL to initialize..."
-  while ! mysqladmin ping --host=db --password="$DB_PASS" --silent; do
+  while ! mysqladmin ping --host=$DB_HOST --password="$DB_PASS" --silent; do
     sleep 1
   done
 
