@@ -60,7 +60,7 @@ main() {
   # Wait for MySQL
   # --------------
   h2 "Waiting for MySQL to initialize..."
-  while ! mysqladmin ping --host=$DB_HOST --password="$DB_PASS" --silent; do
+  while ! mysqladmin ping --host="$DB_HOST" --password="$DB_PASS" --silent; do
     sleep 1
   done
 
@@ -134,7 +134,7 @@ check_database() {
     STATUS "${PIPESTATUS[0]}"
 
     # If an SQL file exists in /data => load it
-    if [ "$(stat -t /data/*.sql >/dev/null 2>&1)" ]; then
+    if [[ "$(find /data -name '*.sql' | wc -l)" != "0" ]]; then
       DATA_PATH=$(find /data/*.sql | head -n 1)
       h3 "Loading data backup from $DATA_PATH"
 
@@ -197,13 +197,27 @@ check_themes() {
       h3 "($i/$theme_count) '$theme_name' not found. Installing"
       WP theme install --quiet "$theme_name"
       STATUS $?
+      ((i++))
+      continue
+    fi
+
+    # Locally volumed themes
+    if [[ $theme_name =~ ^\[local\] ]]; then
+      themes["${theme_name##*]}"]="${theme_name##*]}"
+      h3 "($i/$theme_count) '${theme_name##*]}' listed as a local volume. SKIPPING..."
+      STATUS SKIP
+      ((i++))
       continue
     fi
 
     # If $theme_name matches a URL using the new format => set $theme_name & $theme_url
+    # If url is from github, correct for the branch name in the plugin name
     if [[ $theme_name =~ ^\[.+\]https?://[www]?.+ ]]; then
       theme_url=${theme_name##\[*\]}
       theme_name="$(echo "$theme_name" | grep -oP '\[\K(.+)(?=\])')"
+      if [[ $theme_url =~ github.com ]]; then
+        theme_name=${theme_name%-*}
+      fi
     fi
 
     theme_url=${theme_url:-$theme_name}
@@ -275,13 +289,27 @@ check_plugins() {
       h3 "($i/$plugin_count) '$plugin_name' not found. Installing"
       WP plugin install --activate --quiet "$plugin_name"
       STATUS $?
+      ((i++))
+      continue
+    fi
+
+    # Locally volumed plugins
+    if [[ $plugin_name =~ ^\[local\] ]]; then
+      plugins["${plugin_name##*]}"]="${plugin_name##*]}"
+      h3 "($i/$plugin_count) '${plugin_name##*]}' listed as a local volume. SKIPPING..."
+      STATUS SKIP
+      ((i++))
       continue
     fi
 
     # If $plugin_name matches a URL using the new format => set $plugin_name & $plugin_url
+    # If url is from github, correct for the branch name in the plugin name
     if [[ $plugin_name =~ ^\[.+\]https?://[www]?.+ ]]; then
       plugin_url=${plugin_name##\[*\]}
       plugin_name="$(echo "$plugin_name" | grep -oP '\[\K(.+)(?=\])')"
+      if [[ $plugin_url =~ github.com ]]; then
+        plugin_name=${plugin_name%-*}
+      fi
     fi
 
     plugin_url=${plugin_url:-$plugin_name}
@@ -296,8 +324,8 @@ check_plugins() {
       STATUS $?
       # Pretty much guarenteed to need/want 'restful' if you are using 'rest-api'
       if [ "$plugin_name" == 'rest-api' ]; then
-        h3 "       Installing 'restful' WP-CLI package"
-        WP package install danielbachhuber/resftul --quiet
+        h3 "($i.5/$plugin_count) Installing 'restful' WP-CLI package"
+        wp package install wp-cli/restful --quiet --allow-root
         STATUS $?
       fi
     fi
